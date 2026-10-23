@@ -1,0 +1,304 @@
+# ============================================================================
+# 引脚约束 —— 盘古 MES2L676-200HP 本地开发板（核心板 PG2L200H-6IFBB676）
+# ----------------------------------------------------------------------------
+# 引脚来源：《MES2L676-200HP硬件使用手册_v1.2》，逐条核对 PDS 封装库后确认。
+#   clk       2.2.3  FPGA_GCLK_27M        D18    板载 27MHz 晶振（U11）
+#   resetn    3.4.1  KEY0                 C22    按键；本板无独立复位引脚，用 KEY0 兼作复位
+#   led[0:7]  3.4.2  ——                  C19 C18 E18 A17 A20 A18 C17 B17   输出高电平点亮
+#                     ↑ 注意：**不按手册 LED0..LED7 的顺序**，见下方"LED 重排"说明
+#   key[0:3]  3.4.1  KEY1..KEY4           C23 B22 A22 B20                   按下 = 0
+#   uart      3.2.5  FPGA_UART_RXD/TXD    B24 / C24   经 CP2102 接 USB Type-C
+#
+# [重点] 2026-09-23 本地板实测确认（串口日志 doc/board/uart_20260923_200737.txt）：
+#     从左到右依次按 4 个用户开关 -> KEY=0x01 / 0x02 / 0x04 / 0x08
+#     即 key[0..3] 的顺序与板上开关的左右顺序一致；复位键（C22）正常，能重启程序。
+#   引脚物理左右顺序即 C22 < C23 < B22 < A22 < B20，与手册 KEY0..KEY4 一致。
+#
+#   两点如实记录，均非映射错误：
+#     * 手册是 0 起编号、板上丝印是 1 起编号（手册 KEY0..KEY4 = 丝印 KEY1..KEY5）。
+#     * 板上 LED 丝印（D12..D19）相对开关是乱序排布 —— 这是硬件现状。
+#       根因：按键的管脚是按排列分配的（C22<C23<B22<A22<B20 正好左到右），
+#       而 LED 的管脚是按布线就近分配的，所以 LED0..LED7 在板上不是空间顺序。
+#
+# [重点] LED 重排（2026-09-23，为了让现场演示直观）：
+#   手册 LEDn ↔ 管脚/丝印 两张表拼起来是：
+#     LED0=A20=D17  LED1=C18=D18  LED2=C19=D19  LED3=E18=D13
+#     LED4=A17=D14  LED5=A18=D15  LED6=C17=D16  LED7=B17=D12
+#   板上开关与 D 编号的位置关系（实测）：SW3→D17  SW4→D19  SW5→D18
+#                                        SW6→D13  SW7→D14
+#   而 key[i] 对应 SW(i+4)，所以把 led[i] 改成 SW(i+4) 正下方那个灯的管脚：
+#     led[0]=C19(D19, SW4 下)  led[1]=C18(D18, SW5 下)
+#     led[2]=E18(D13, SW6 下)  led[3]=A17(D14, SW7 下)
+#     led[4]=A20(D17, SW3 下)  led[5..7]=A18/C17/B17(D15/D16/D12)
+#   效果：演示程序（LED=KEY）按哪个开关，正下方那个灯就亮。
+# [!] 因此 led[i] **不再等于**手册 LEDi；报告里需注明"按板卡实际位置重排"。
+#
+# [重点] 时钟（2026-09-27 更正）：板载 27MHz 晶振经 PLL 倍频到 **49.8927MHz** 作系统时钟。
+#   * 下面这句 create_clock 约束的是**输入晶振**，仍是 27MHz / 37.037ns，别改。
+#   * PLL 输出（49.8927MHz）的时钟约束由 PDS **从 PLL IP 自动推导**
+#     （ipcore/pll/pll.v：CLKIN_FREQ=27.0 / STATIC_RATIOM=2 / STATIC_RATIOF=21.25
+#      ⇒ VCO = 27 × 2 × 21.25 = 1147.5MHz；STATIC_RATIO0=23 ⇒ VCO/23 = 49.8927MHz），
+#     时序报告里显示的就是 clk|u_pll/u_gpll/CLKOUT0_Inferred 49.8927MHz / 20.043ns。
+#   * 本注释上一版（2026-09-25）写的是 49.89MHz（RATIO0=23）—— 那是提频前的旧值，
+#     已随 RATIO0=18.5 一起过期。报告数字以这里为准。
+# [!] 所以"只看这个文件"会误以为系统还是 27MHz —— 是本注释要澄清的点。
+#   * PLL IP 在工程里以 IP 源文件形式引用（RV32I_1.pds 的 wgt_my_ips_src），
+#     不能只把 pll.v 当普通源文件加进去。
+#   * 后果：UART 分频、CoreMark 的 EE_TICKS_PER_SEC、addr_map.h 的 CPU_HZ、
+#     rtthread 的 BOARD_SYSTEM_CLOCK_HZ 都要按 62.03MHz 取值：UART_DIV=538、
+#     EE_TICKS_PER_SEC=62030900（scripts/coremark_port/core_portme.c）、
+#     CPU_HZ=62030900u（scripts/demo/addr_map.h）、
+#     BOARD_SYSTEM_CLOCK_HZ=62030900u（scripts/rtthread/bsp/board.h）。
+#     这四处【已按 62.03MHz 改好】。仿真仍是 27MHz —— 两套口径见 rtl/top/cpu_top_board.v 头注释。
+# 器件与远程 FPGA 平台是同一颗；**远程平台没有 PLL，仍是 27MHz**。
+#
+# 本工程 top module 是 cpu_top_board（不是 cpu_top）—— 它把 pc[31:0] / done
+# 这两个板级调试口挡在外面，并把 key[7:4] 恒定接 1。
+#   * PDS 会把未指定 LOC 的输出端口自动布到 BANKR5 的任意引脚（实测
+#     pc[0]→M2、led[0]→P6），而本板 BANKR5 有 SFP/HSST 等已连接引脚，
+#     32 位输出乱布有驱动冲突风险。
+#   * pc 仍是仿真侧的分析数据源（tb_coremark 的 +TRACE dump / TIMEOUT 诊断），
+#     所以仿真继续用 cpu_top 原样，不动它的端口。
+# 本文件因此**没有**任何未约束端口。
+# ============================================================================
+
+# ---- 主时钟：27MHz ----
+create_clock -name {clk} [get_ports {clk}] -period {37.037} -waveform {0.000 18.518} -add
+
+# ============================================================================
+# 跨时钟域：CPU 时钟域 ↔ 视频时钟域 —— 声明为异步
+# ----------------------------------------------------------------------------
+# 本设计有【两个独立的 GPLL】，都从同一个 27MHz 晶振推出来（VCO 都是 1147.5MHz）：
+#     u_pll       CLKOUT0 = VCO/23 = 49.8927MHz  → clk_sys（CPU、总线、显存 A 口）
+#     u_pll_video CLKOUT0 = VCO/45 = 25.5004MHz  → pix_clk（PPU、显存 B 口）
+#                 CLKOUT1 = VCO/9  = 127.5022MHz → ser_clk（TMDS 并串）
+# 物理上同源，但**两个 PLL 输出之间的相位关系未定义**，所以按异步处理。
+# PDS 自己也是这个判断，综合时会报：
+#   STA-3002: Can not calculate least common multiplier between clock
+#             clk|u_pll/u_gpll/CLKOUT0_Inferred(period: 20043 ps) and
+#             clk|u_video/u_pll_video/u_gpll/CLKOUT0_Inferred(period: 39215 ps),
+#             its may be asynchronous clocks.
+#
+# 域间【只有】两组逻辑通路，且两组都是设计里已存在的两级 FF 同步器：
+#     clk_sys → pix_clk   scroll_x[11:0] / scroll_y[11:0] → sx_meta/sy_meta → sx_p/sy_p
+#     pix_clk → clk_sys   ppu 的 vs_ph                     → vs_meta（vblank 状态位）
+# 显存（vram_b32/vram_pal）的跨域读写**不走这里** —— 它们是真双口 DRAM，A 口 clk_sys、
+# B 口 pix_clk 由 DRAM 原语自身保证，在 STA 里不产生可分析的逻辑弧。
+# 所以把这两个域整体判为异步不会漏掉任何真正需要检查的路径。
+# —— 但**本文件做不到**（fdc 的执行时机太早，见下）。所以报告里这 22 条存在，
+#    按 path group 分开读即可。
+#
+# [!] STA 对这两个域的默认行为：按"一个 pix_clk 周期（39.215ns）内必须建立"去算那
+#     12+9 位同步器 ⇒ 恒报 21 条 clk_sys→pix_clk + 1 条 pix_clk→clk_sys 违例
+#     （WNS −0.916 / −0.515），会跟真正的问题（clk_sys 域内 load→mul 那 8 条 −0.359）
+#     混在同一个摘要里。
+#
+# ----------------------------------------------------------------------------
+# [!] 这里【没有】跨域时序例外 —— 试过四种写法都不成立，别再重复踩（2026-09-27）
+# ----------------------------------------------------------------------------
+# 现状：.fdc 里**没有**办法把这两个域判为异步。原因是一个先天的时序问题：
+# 本文件的所有命令都在 PDS 的 "Constraint check" 阶段执行完，而三路 PLL 输出时钟
+# 是 PDS 【读完本文件之后】才 create_generated_clock 出来的。也就是说
+# ——写约束的时候，那些时钟和那些 FF 都还不存在。
+# 四种写法逐一实测（都在综合日志/constraint_check.ccr 里留了记录）：
+#
+#  (A) set_clock_groups -asynchronous -group {clk|u_pll/u_gpll/CLKOUT0_Inferred} -group {...}
+#      → C: SDC-2017 Nothing implicitly matched / C: SDC-2027 ... is ignored（时钟名还不存在）
+#  (B) set_false_path -to [get_pins {u_video/u_core/sx_meta[*]:D ...}]
+#      → C: Timing-4003 Pin not found，然后 E: CommandTiming-0057 Nothing matched for 'to_list'
+#        —— E 级，**整个综合当场中止**，比不写还糟。
+#        附带两个坑：[*] 在 TCL 里是"只含 '*' 的字符类"、匹配一个字面 '*'，不是通配符；
+#        get_pins 的引脚分隔符也不是 ':'。
+#  (B') 换成厂商例子里手写 fdc 的层次写法（'.' 分层、'/' 接引脚、下标字面量），
+#       以及 get_pins -of_objects [get_cells ... -filter ...]：
+#      → 都不中。前者 Pin not found，后者 E: Flow-0073 Option '-filter' is not defined。
+#        即这个阶段的设计库里 RTL 的位选 FF 还没落成可寻址的 pin，点名点不到。
+#  (C) set_clock_groups -asynchronous -derive
+#      → E: Flow-0073 Option '-derive' is not defined。`-derive` 只存在于 PDS 约束编辑器
+#        自己的语法表（syn/lib/syntax/sdc_cmd.xml 里 set_clock_groups 的
+#        scope_aggregate_arguments），批处理用的 fdc 解析器不认。
+#  另外两条通用坑：.fdc 是【裁剪过的 TCL 环境】，不是完整 PDS 脚本 ——
+#  sizeof_collection 报 ConstraintEditor-0046 "invalid command name"、变量/set/catch
+#  也别指望；而且 fdc 里的 E 级错误会让综合当场中止，不像 C 级只是警告。
+#  还有：PnR 阶段虽然也会打 "Constraint check start"，但它只重读 .pcf（def_port 那些），
+#  **不会重读本 .fdc** —— 所以也没法靠"推迟到 PnR 时时钟已存在"来绕。
+#
+# 后果（可接受，但看报告时必须知道）：
+#   STA 会按"一个 pix_clk 周期(39.215ns)内必须建立"去算那 12+9 位同步器，恒报
+#   21 条 clk_sys→pix_clk + 1 条 pix_clk→clk_sys 违例（WNS −0.916 / −0.515）。
+#   这是**建模假象**，不是真问题（两条路径都只有 0 级逻辑、纯走线）。
+#   真正的违例是另一个 path group：clk|u_pll → clk|u_pll 的 8 条（WNS −0.359）。
+#   **读时序报告时按 path group 分开看，别把跨域那 22 条当成 CPU 坏了。**
+# ============================================================================
+
+# ---- 时钟输入 ----
+define_attribute {p:clk} {PAP_IO_DIRECTION} {INPUT}
+define_attribute {p:clk} {PAP_IO_LOC} {D18}
+define_attribute {p:clk} {PAP_IO_VCCIO} {3.3}
+define_attribute {p:clk} {PAP_IO_STANDARD} {LVCMOS33}
+define_attribute {p:clk} {PAP_IO_NONE} {TRUE}
+
+# ---- 复位（手册 KEY0 / 丝印 KEY1，低有效）----
+define_attribute {p:resetn} {PAP_IO_DIRECTION} {INPUT}
+define_attribute {p:resetn} {PAP_IO_LOC} {C22}
+define_attribute {p:resetn} {PAP_IO_VCCIO} {3.3}
+define_attribute {p:resetn} {PAP_IO_STANDARD} {LVCMOS33}
+define_attribute {p:resetn} {PAP_IO_PULLUP} {TRUE}
+
+# ---- UART：输出 uart_tx / 输入 uart_rx ----
+define_attribute {p:uart_tx} {PAP_IO_DIRECTION} {OUTPUT}
+define_attribute {p:uart_tx} {PAP_IO_LOC} {C24}
+define_attribute {p:uart_tx} {PAP_IO_VCCIO} {3.3}
+define_attribute {p:uart_tx} {PAP_IO_STANDARD} {LVCMOS33}
+define_attribute {p:uart_tx} {PAP_IO_DRIVE} {8}
+define_attribute {p:uart_tx} {PAP_IO_SLEW} {SLOW}
+
+define_attribute {p:uart_rx} {PAP_IO_DIRECTION} {INPUT}
+define_attribute {p:uart_rx} {PAP_IO_LOC} {B24}
+define_attribute {p:uart_rx} {PAP_IO_VCCIO} {3.3}
+define_attribute {p:uart_rx} {PAP_IO_STANDARD} {LVCMOS33}
+define_attribute {p:uart_rx} {PAP_IO_PULLUP} {TRUE}
+
+# ---- LED0..LED7（输出高电平点亮）----
+define_attribute {p:led[0]} {PAP_IO_DIRECTION} {OUTPUT}
+define_attribute {p:led[0]} {PAP_IO_LOC} {C19}
+define_attribute {p:led[0]} {PAP_IO_VCCIO} {3.3}
+define_attribute {p:led[0]} {PAP_IO_STANDARD} {LVCMOS33}
+define_attribute {p:led[0]} {PAP_IO_DRIVE} {8}
+define_attribute {p:led[0]} {PAP_IO_SLEW} {SLOW}
+define_attribute {p:led[1]} {PAP_IO_DIRECTION} {OUTPUT}
+define_attribute {p:led[1]} {PAP_IO_LOC} {C18}
+define_attribute {p:led[1]} {PAP_IO_VCCIO} {3.3}
+define_attribute {p:led[1]} {PAP_IO_STANDARD} {LVCMOS33}
+define_attribute {p:led[1]} {PAP_IO_DRIVE} {8}
+define_attribute {p:led[1]} {PAP_IO_SLEW} {SLOW}
+define_attribute {p:led[2]} {PAP_IO_DIRECTION} {OUTPUT}
+define_attribute {p:led[2]} {PAP_IO_LOC} {E18}
+define_attribute {p:led[2]} {PAP_IO_VCCIO} {3.3}
+define_attribute {p:led[2]} {PAP_IO_STANDARD} {LVCMOS33}
+define_attribute {p:led[2]} {PAP_IO_DRIVE} {8}
+define_attribute {p:led[2]} {PAP_IO_SLEW} {SLOW}
+define_attribute {p:led[3]} {PAP_IO_DIRECTION} {OUTPUT}
+define_attribute {p:led[3]} {PAP_IO_LOC} {A17}
+define_attribute {p:led[3]} {PAP_IO_VCCIO} {3.3}
+define_attribute {p:led[3]} {PAP_IO_STANDARD} {LVCMOS33}
+define_attribute {p:led[3]} {PAP_IO_DRIVE} {8}
+define_attribute {p:led[3]} {PAP_IO_SLEW} {SLOW}
+define_attribute {p:led[4]} {PAP_IO_DIRECTION} {OUTPUT}
+define_attribute {p:led[4]} {PAP_IO_LOC} {A20}
+define_attribute {p:led[4]} {PAP_IO_VCCIO} {3.3}
+define_attribute {p:led[4]} {PAP_IO_STANDARD} {LVCMOS33}
+define_attribute {p:led[4]} {PAP_IO_DRIVE} {8}
+define_attribute {p:led[4]} {PAP_IO_SLEW} {SLOW}
+define_attribute {p:led[5]} {PAP_IO_DIRECTION} {OUTPUT}
+define_attribute {p:led[5]} {PAP_IO_LOC} {A18}
+define_attribute {p:led[5]} {PAP_IO_VCCIO} {3.3}
+define_attribute {p:led[5]} {PAP_IO_STANDARD} {LVCMOS33}
+define_attribute {p:led[5]} {PAP_IO_DRIVE} {8}
+define_attribute {p:led[5]} {PAP_IO_SLEW} {SLOW}
+define_attribute {p:led[6]} {PAP_IO_DIRECTION} {OUTPUT}
+define_attribute {p:led[6]} {PAP_IO_LOC} {C17}
+define_attribute {p:led[6]} {PAP_IO_VCCIO} {3.3}
+define_attribute {p:led[6]} {PAP_IO_STANDARD} {LVCMOS33}
+define_attribute {p:led[6]} {PAP_IO_DRIVE} {8}
+define_attribute {p:led[6]} {PAP_IO_SLEW} {SLOW}
+define_attribute {p:led[7]} {PAP_IO_DIRECTION} {OUTPUT}
+define_attribute {p:led[7]} {PAP_IO_LOC} {B17}
+define_attribute {p:led[7]} {PAP_IO_VCCIO} {3.3}
+define_attribute {p:led[7]} {PAP_IO_STANDARD} {LVCMOS33}
+define_attribute {p:led[7]} {PAP_IO_DRIVE} {8}
+define_attribute {p:led[7]} {PAP_IO_SLEW} {SLOW}
+
+# ---- KEY1..KEY4 → key[0..3]（按下 = 0；手册 KEY0 / 丝印 KEY1 已用作 resetn）----
+define_attribute {p:key[0]} {PAP_IO_DIRECTION} {INPUT}
+define_attribute {p:key[0]} {PAP_IO_LOC} {C23}
+define_attribute {p:key[0]} {PAP_IO_VCCIO} {3.3}
+define_attribute {p:key[0]} {PAP_IO_STANDARD} {LVCMOS33}
+define_attribute {p:key[0]} {PAP_IO_PULLUP} {TRUE}
+define_attribute {p:key[1]} {PAP_IO_DIRECTION} {INPUT}
+define_attribute {p:key[1]} {PAP_IO_LOC} {B22}
+define_attribute {p:key[1]} {PAP_IO_VCCIO} {3.3}
+define_attribute {p:key[1]} {PAP_IO_STANDARD} {LVCMOS33}
+define_attribute {p:key[1]} {PAP_IO_PULLUP} {TRUE}
+define_attribute {p:key[2]} {PAP_IO_DIRECTION} {INPUT}
+define_attribute {p:key[2]} {PAP_IO_LOC} {A22}
+define_attribute {p:key[2]} {PAP_IO_VCCIO} {3.3}
+define_attribute {p:key[2]} {PAP_IO_STANDARD} {LVCMOS33}
+define_attribute {p:key[2]} {PAP_IO_PULLUP} {TRUE}
+define_attribute {p:key[3]} {PAP_IO_DIRECTION} {INPUT}
+define_attribute {p:key[3]} {PAP_IO_LOC} {B20}
+define_attribute {p:key[3]} {PAP_IO_VCCIO} {3.3}
+define_attribute {p:key[3]} {PAP_IO_STANDARD} {LVCMOS33}
+define_attribute {p:key[3]} {PAP_IO_PULLUP} {TRUE}
+
+# ============================================================================
+# HDMI 输出 —— 4 对 TMDS 差分（1 对时钟 + 3 对数据）
+# ----------------------------------------------------------------------------
+# 引脚来源：盘古MINI 手册 1.4.2.5 HDMI 输出接口，与厂商 demo
+#   2_10_hdmi_loop/hdmi_loop.fdc 逐条一致（同一块 MINI 板）。
+# 板上 HDMI OUT 是 **FPGA 差分引脚直连 HDMI 座**，中间没有电平转换/使能芯片，
+#   所以除下面这些 IO 属性外不需要任何 I2C 初始化（HDMI IN 才需要配 MS7200）。
+#
+# [重点] 电气规格必须照抄 demo，不能按普通 LVDS 想当然：
+#   PAP_IO_STANDARD = LVDS25  +  PAP_IO_VCCIO = 2.5   —— HDMI 座是 2.5V 域
+#   PAP_IO_DRIVE    = 3.5                              —— TMDS 要求的驱动强度
+#   PAP_IO_NONE     = TRUE                             —— 输出不加端接（demo 原样）
+#   真正的差分对由 outputserdes.v 里的 GTP_OUTBUFDS(.IOSTANDARD("TMDS")) 产生，
+#   P 脚必须在真 LVDS 对的正端（N21/N22 等见手册）。
+# ============================================================================
+
+# ---- TMDS 时钟对：pixel clock（25.5MHz），HDMI_TX_CLK ----
+define_attribute {p:tmds_clk_p} {PAP_IO_DIRECTION} {OUTPUT}
+define_attribute {p:tmds_clk_p} {PAP_IO_LOC} {N21}
+define_attribute {p:tmds_clk_p} {PAP_IO_VCCIO} {2.5}
+define_attribute {p:tmds_clk_p} {PAP_IO_STANDARD} {LVDS25}
+define_attribute {p:tmds_clk_p} {PAP_IO_DRIVE} {3.5}
+define_attribute {p:tmds_clk_p} {PAP_IO_NONE} {TRUE}
+define_attribute {p:tmds_clk_n} {PAP_IO_DIRECTION} {OUTPUT}
+define_attribute {p:tmds_clk_n} {PAP_IO_LOC} {N22}
+define_attribute {p:tmds_clk_n} {PAP_IO_VCCIO} {2.5}
+define_attribute {p:tmds_clk_n} {PAP_IO_STANDARD} {LVDS25}
+define_attribute {p:tmds_clk_n} {PAP_IO_DRIVE} {3.5}
+define_attribute {p:tmds_clk_n} {PAP_IO_NONE} {TRUE}
+
+# ---- TMDS 数据对 0：蓝（B[7:0]，同时承载 HS/VS）HDMI_TX_D0 ----
+define_attribute {p:tmds_data_p[0]} {PAP_IO_DIRECTION} {OUTPUT}
+define_attribute {p:tmds_data_p[0]} {PAP_IO_LOC} {R25}
+define_attribute {p:tmds_data_p[0]} {PAP_IO_VCCIO} {2.5}
+define_attribute {p:tmds_data_p[0]} {PAP_IO_STANDARD} {LVDS25}
+define_attribute {p:tmds_data_p[0]} {PAP_IO_DRIVE} {3.5}
+define_attribute {p:tmds_data_p[0]} {PAP_IO_NONE} {TRUE}
+define_attribute {p:tmds_data_n[0]} {PAP_IO_DIRECTION} {OUTPUT}
+define_attribute {p:tmds_data_n[0]} {PAP_IO_LOC} {P25}
+define_attribute {p:tmds_data_n[0]} {PAP_IO_VCCIO} {2.5}
+define_attribute {p:tmds_data_n[0]} {PAP_IO_STANDARD} {LVDS25}
+define_attribute {p:tmds_data_n[0]} {PAP_IO_DRIVE} {3.5}
+define_attribute {p:tmds_data_n[0]} {PAP_IO_NONE} {TRUE}
+
+# ---- TMDS 数据对 1：绿（G[7:0]）HDMI_TX_D1 ----
+define_attribute {p:tmds_data_p[1]} {PAP_IO_DIRECTION} {OUTPUT}
+define_attribute {p:tmds_data_p[1]} {PAP_IO_LOC} {P23}
+define_attribute {p:tmds_data_p[1]} {PAP_IO_VCCIO} {2.5}
+define_attribute {p:tmds_data_p[1]} {PAP_IO_STANDARD} {LVDS25}
+define_attribute {p:tmds_data_p[1]} {PAP_IO_DRIVE} {3.5}
+define_attribute {p:tmds_data_p[1]} {PAP_IO_NONE} {TRUE}
+define_attribute {p:tmds_data_n[1]} {PAP_IO_DIRECTION} {OUTPUT}
+define_attribute {p:tmds_data_n[1]} {PAP_IO_LOC} {P24}
+define_attribute {p:tmds_data_n[1]} {PAP_IO_VCCIO} {2.5}
+define_attribute {p:tmds_data_n[1]} {PAP_IO_STANDARD} {LVDS25}
+define_attribute {p:tmds_data_n[1]} {PAP_IO_DRIVE} {3.5}
+define_attribute {p:tmds_data_n[1]} {PAP_IO_NONE} {TRUE}
+
+# ---- TMDS 数据对 2：红（R[7:0]）HDMI_TX_D2 ----
+define_attribute {p:tmds_data_p[2]} {PAP_IO_DIRECTION} {OUTPUT}
+define_attribute {p:tmds_data_p[2]} {PAP_IO_LOC} {N23}
+define_attribute {p:tmds_data_p[2]} {PAP_IO_VCCIO} {2.5}
+define_attribute {p:tmds_data_p[2]} {PAP_IO_STANDARD} {LVDS25}
+define_attribute {p:tmds_data_p[2]} {PAP_IO_DRIVE} {3.5}
+define_attribute {p:tmds_data_p[2]} {PAP_IO_NONE} {TRUE}
+define_attribute {p:tmds_data_n[2]} {PAP_IO_DIRECTION} {OUTPUT}
+define_attribute {p:tmds_data_n[2]} {PAP_IO_LOC} {N24}
+define_attribute {p:tmds_data_n[2]} {PAP_IO_VCCIO} {2.5}
+define_attribute {p:tmds_data_n[2]} {PAP_IO_STANDARD} {LVDS25}
+define_attribute {p:tmds_data_n[2]} {PAP_IO_DRIVE} {3.5}
+define_attribute {p:tmds_data_n[2]} {PAP_IO_NONE} {TRUE}

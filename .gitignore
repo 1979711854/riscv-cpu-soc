@@ -1,0 +1,157 @@
+
+# ---- Windows ----
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ---- 通用编辑器 / 日志 ----
+*.swp
+*.swo
+*.jou
+*.log
+
+# ---- Icarus Verilog / GTKWave 仿真生成物（本地产物，不入仓）----
+*.vcd
+*.vvp
+
+# ---- 目录下的本地调试、日志与临时产物 ----
+*.tmp
+*.bak
+
+# ---- Pango PDS（紫光同创）----
+# PDS 工程统一放 pds/ 下；以下按相对路径忽略其生成物，
+# 避免误伤仓库根 sim/（我们的 testbench 需要入库）。
+# 具体目录名以创建 PDS 工程后的实际结构为准，届时再细化。
+/pds/*/syn/
+/pds/*/sim/
+/pds/*/impl/
+/pds/*/.pango/
+/pds/*/run*/
+/pds/**/*.wdb
+
+# PDS 工程锁文件（每次打开 PDS 都会变，本机私有，不入库）
+*.pds.lock
+
+# ---- 仿真生成物 ----
+*.vvp
+*.vcd
+
+# ---- 迁移期间：队友交接的原始目录（回归验证通过后可删）----
+/riscv32-FPGA-pds/
+
+# ---- 程序镜像与编译中间产物（由 scripts/ 再生成，不入库）----
+/sim/programs/
+*.elf
+*.o
+*.map
+*.dump
+
+# 例外：riscv-tests 的预编译 ELF 要入库。
+# 它们是回归基线的"金标准样本"——上游 riscv-tests 会变，重新 clone 未必复现出
+# 同一批二进制，基线一旦悄悄漂移会让人误以为是自己改坏了 CPU。共 42 个、约 450KB。
+# 来源与再生成方式见 third_party/riscv-tests-elf/README.md
+!third_party/riscv-tests-elf/*.elf
+
+# ---- PDS 工程生成物（只保留 .pds / .fdc / firmware 快照）----
+/pds/**/compile/
+/pds/**/device_map/
+/pds/**/place_route/
+/pds/**/report_timing/
+/pds/**/synthesize/
+/pds/**/generate_bitstream/
+/pds/**/constraint_check/
+/pds/**/log/
+/pds/**/logbackup/
+/pds/**/Design Editor/
+/pds/**/*.adf
+/pds/**/*.db
+/pds/**/*.prt
+/pds/**/*.pvf
+/pds/**/*.cmr
+/pds/**/*.vm
+/pds/**/*.snr
+/pds/**/*.netlist
+/pds/**/*.sbit
+/pds/**/*.smsk
+/pds/**/*.bgr
+/pds/**/*.pcf
+/pds/**/*.dmr
+/pds/**/*.rtp
+/pds/**/*.rtr
+/pds/**/*.prr
+/pds/**/*.plc
+/pds/**/*.csv
+/pds/**/impl.tcl
+# Fabric Inserter 的临时工程（打开 Inserter 就在工程目录生成 temp_<时间戳>，无内容）
+/pds/**/temp_*
+# Fabric Debugger 的工作文件（工具产物，不是交付物）
+/pds/**/data.wf
+/pds/**/cur_project
+# [!] .dprj / .wdf 全局忽略，不限目录 —— 理由同下面的 .fic 注释：
+#     它们是 Debugger 的工程文件，单有 .dprj 没有 .wdf 数据就是【孤儿】，
+#     别人拿到也打不开，反而误导。要存档就导 VCD（自带信号名，GTKWave 可开）。
+#     验的证据（VCD）走 doc/board/*.vcd，已单独放开。
+*.dprj
+*.wdf
+# [!] .fic 故意【不】忽略 —— 它是 ILA 探针的通道映射记录，小且有存档价值。
+#     但提交前必须确认 Project.device.designInputFile 指向的那份 .adf
+#     与它配套的 .sbit 是同一次综合（否则是过期文件，会误导人）。
+#     .sbit 无法入库（9MB/个，见 /pds/**/*.sbit），所以 .fic 一定是"孤儿"，
+#     用之前按 doc/ila_analysis.md §7.6 的办法核一遍。
+
+# ---- Vivado / AMD（若日后使用）----
+.Xil/
+*.cache/
+*.hw/
+*.ip_user_files/
+*.runs/
+*.bit
+*.ltx
+
+# ---- 其他 agent 工具的本地数据目录 ----
+.workbuddy/
+
+# ---- 一次性调试产物（研究完即可删）----
+*.keepbak
+
+# 新增：gen_bit_stream 流程会生成这两个目录
+/pds/**/generate_netlist/
+/pds/**/report_power/
+
+# IP Compiler 每次重新生成 IP 都会在 ipcore/<ip>/ 下写一个 rev_N/ 工作目录
+# （compile/、flow.log、impl.tcl、ipc_ads.* 等，全是工具产物，不是交付物）。
+# 2026-09-28 加：当时它把 ipc_ads.pds / ipc_ads.tcl 漏进了打包清单。
+/pds/**/ipcore/*/rev_*/
+
+# ---- [!] 例外：ILA 硬件在环抓的波形是【板上实测证据】，不是仿真产物 ----
+# 上面的 *.vcd 是给 Icarus/GTKWave 的仿真输出用的；硬件抓的 VCD 与
+# doc/board/uart_*.txt 同类（都是板上证据），要入库。
+# 命名约定见 doc/ila_analysis.md §7.6：ila_hw_<触发信号>_<代码区>.vcd
+!doc/board/*.vcd
+
+# ---- RT-Thread 移植（scripts/rtthread/）----
+/scripts/rtthread/build/
+
+# ---- boot selector（scripts/boot/）：编译产物不入库 ----
+# [!] 2026-10-17 加：scripts/boot/build/ 下会产出 boot.elf 与 {i,d,}mem.hex，
+#     它们是 merge_images.py 的输入、可随时重建；入库只会造成"hex 与 boot.S 不同步"。
+#     （.elf/.o 已被上面的全局规则覆盖，这里补 hex。）
+/scripts/boot/build/
+
+# ---- 五子棋 x86 单测产物 ----
+/scripts/gomoku/*.exe
+/scripts/gomoku/*.o
+
+# ---- 调试 trace / 仿真日志（-PcTrace/-ITrace/-TrapTrace/-LTrace 产物，可重生成，别入库）----
+sim/*trace*.txt
+rtthread_*trace*.txt
+sim/*.log
+
+# P3.6 逐 seed 取证目录（40 份 .rtr + 抢拷日志，~28MB，只留本地；结论已落 doc/reports/2026-10-16_p3_6_margin_plan.md）
+/pds/_capture_p36/
+
+# ---- 主机预览产物（scripts\gomoku\preview.ps1 可随时重建）----
+/sim/tools/preview_gomoku.exe
+/sim/tools/_main_preview.c
+/sim/tools/_title_preview.exe
+/sim/tools/_prev.txt
